@@ -2,6 +2,7 @@
 
 import time
 from copy import deepcopy
+import tf_transformations
 
 from geometry_msgs.msg import PoseStamped
 from rclpy.duration import Duration
@@ -9,15 +10,19 @@ import rclpy
 
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
+initial_position = [0.0, 0.0, 0.0]
+
 # Shelf positions for picking
 shelf_positions = {
-    "shelf_A": [5.41, 0.0, -1.57]}
+    "shelf_A": [5.75, 0.0, -1.57]}
 
 # Shipping destination for picked products
 shipping_destinations = {
-    "goal_position": [0.0, 0.0, 3.10]}
+    "goal_position": [0.7, -3.3, -1.57]}
 
 
+def euler_to_quaternion(roll, pitch, yaw):
+    return tf_transformations.quaternion_from_euler(roll, pitch, yaw)
 
 
 def main():
@@ -28,16 +33,25 @@ def main():
 
     rclpy.init()
 
+    # Convert Euler angle to quaternion
+    initial_orientation_quaternion = euler_to_quaternion(0, 0, initial_position[2])
+    shelf_orientation_quaternion = euler_to_quaternion(0, 0, shelf_positions[request_item_location][2])
+    
+
+
     navigator = BasicNavigator()
 
     # Set your demo's initial pose
     initial_pose = PoseStamped()
     initial_pose.header.frame_id = 'map'
     initial_pose.header.stamp = navigator.get_clock().now().to_msg()
-    initial_pose.pose.position.x = 0.0
-    initial_pose.pose.position.y = 0.0
+    initial_pose.pose.position.x = initial_position[0]
+    initial_pose.pose.position.y = initial_position[1]
     initial_pose.pose.orientation.z = 1.0
-    initial_pose.pose.orientation.w = 3.14
+    initial_pose.pose.orientation.x = initial_orientation_quaternion[0]
+    initial_pose.pose.orientation.y = initial_orientation_quaternion[1]
+    initial_pose.pose.orientation.z = initial_orientation_quaternion[2]
+    initial_pose.pose.orientation.w = initial_orientation_quaternion[3]
     navigator.setInitialPose(initial_pose)
 
     # Wait for navigation to activate fully
@@ -49,7 +63,11 @@ def main():
     shelf_item_pose.pose.position.x = shelf_positions[request_item_location][0]
     shelf_item_pose.pose.position.y = shelf_positions[request_item_location][1]
     shelf_item_pose.pose.orientation.z = 1.0
-    shelf_item_pose.pose.orientation.w = shelf_positions[request_item_location][2]
+    shelf_item_pose.pose.orientation.x = shelf_orientation_quaternion[0]
+    shelf_item_pose.pose.orientation.y = shelf_orientation_quaternion[1]
+    shelf_item_pose.pose.orientation.z = shelf_orientation_quaternion[2]
+    shelf_item_pose.pose.orientation.w = shelf_orientation_quaternion[3]
+
     print('Received request for item picking at ' + request_item_location + '.')
     navigator.goToPose(shelf_item_pose)
 
