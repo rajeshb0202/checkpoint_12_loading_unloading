@@ -329,8 +329,8 @@ private:
     geometry_msgs::msg::Twist vel_msg_;
     nav_msgs::msg::Odometry::SharedPtr odom_msg_;
 
-    float translation_speed = 0.4; 
-    float angular_speed = 0.5;
+    float translation_speed = 0.2; 
+    float angular_speed = 0.2;
     int intensity_threshold = 8000;
     float distance_gap_threshold = 0.06;
     float distance_to_be_moved_underneath = 0.35;

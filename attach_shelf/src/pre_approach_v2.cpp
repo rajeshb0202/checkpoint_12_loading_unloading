@@ -204,8 +204,8 @@ class PreApproach : public rclcpp::Node
         bool dest_reached;
         bool rotate_status;
         bool called_server;
-        float angular_speed = 0.4;
-        float translation_speed = 0.6;
+        float angular_speed = 0.2;
+        float translation_speed = 0.2;
         float current_yaw_angle;
         float yaw_threshold= 0.02;
 };
