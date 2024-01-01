@@ -1,115 +1,96 @@
-
-
-import time
-from copy import deepcopy
-import tf_transformations
-
+import rclpy
+from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from rclpy.duration import Duration
-import rclpy
-
+import tf_transformations
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
-initial_position = [0.0, 0.0, 0.0]
-
-# Shelf positions for picking
-shelf_positions = {
-    "shelf_A": [5.75, 0.0, -1.57]}
-
-# Shipping destination for picked products
-shipping_destinations = {
-    "goal_position": [0.7, -3.3, -1.57]}
 
 
-def euler_to_quaternion(roll, pitch, yaw):
-    return tf_transformations.quaternion_from_euler(roll, pitch, yaw)
+class ShelfToShipNavigator(Node):
+    def __init__(self):
+        super().__init__('shelf_to_ship_navigator')
+
+        self.initial_position = [0.0, 0.0, 0.0]
+        self.loading_position = {"shelf_A": [5.75, 0.0, -1.57]}
+        self.shipping_destinations = {"shipping_position": [0.7, -3.3, -1.57]}
+        self.shelf_raised = True
+        self.navigator = BasicNavigator()
+        self.set_initial_pose()
+        self.execute_navigation_task('shelf_A', 'shipping_position')
 
 
-def main():
-    ####################
-    request_item_location = 'shelf_A'
-    request_destination = 'goal_position'
-    ####################
 
-    rclpy.init()
+    #method to convert quaternion to euler angle in radians
+    def euler_to_quaternion(self, roll, pitch, yaw):
+        return tf_transformations.quaternion_from_euler(roll, pitch, yaw)
 
-    # Convert Euler angle to quaternion
-    initial_orientation_quaternion = euler_to_quaternion(0, 0, initial_position[2])
-    shelf_orientation_quaternion = euler_to_quaternion(0, 0, shelf_positions[request_item_location][2])
+
+    #method to set the intial pose
+    def set_initial_pose(self):
+        quaternion = self.euler_to_quaternion(0, 0, self.initial_position[2])
+        initial_pose = PoseStamped()
+        initial_pose.header.frame_id = 'map'
+        initial_pose.header.stamp = self.navigator.get_clock().now().to_msg()
+        initial_pose.pose.position.x = self.initial_position[0]
+        initial_pose.pose.position.y = self.initial_position[1]
+        initial_pose.pose.orientation.x = quaternion[0]
+        initial_pose.pose.orientation.y = quaternion[1]
+        initial_pose.pose.orientation.z = quaternion[2]
+        initial_pose.pose.orientation.w = quaternion[3]
+        self.navigator.setInitialPose(initial_pose)
+
     
 
+    def execute_navigation_task(self, request_item_location, request_destination):
+        self.navigator.waitUntilNav2Active()
 
-    navigator = BasicNavigator()
+        # Navigate to shelf position
+        self.go_to_pose(self.loading_position[request_item_location], 'shelf')
 
-    # Set your demo's initial pose
-    initial_pose = PoseStamped()
-    initial_pose.header.frame_id = 'map'
-    initial_pose.header.stamp = navigator.get_clock().now().to_msg()
-    initial_pose.pose.position.x = initial_position[0]
-    initial_pose.pose.position.y = initial_position[1]
-    initial_pose.pose.orientation.z = 1.0
-    initial_pose.pose.orientation.x = initial_orientation_quaternion[0]
-    initial_pose.pose.orientation.y = initial_orientation_quaternion[1]
-    initial_pose.pose.orientation.z = initial_orientation_quaternion[2]
-    initial_pose.pose.orientation.w = initial_orientation_quaternion[3]
-    navigator.setInitialPose(initial_pose)
+        # Process navigation result
+        result = self.navigator.getResult()
+        if result == TaskResult.SUCCEEDED:
+            print("reached infornt of shelf")
+            if self.shelf_raised:
+                self.go_to_pose(self.shipping_destinations[request_destination], 'shipping')
+        else:
+            self.handle_navigation_failure(result, request_item_location)
 
-    # Wait for navigation to activate fully
-    navigator.waitUntilNav2Active()
 
-    shelf_item_pose = PoseStamped()
-    shelf_item_pose.header.frame_id = 'map'
-    shelf_item_pose.header.stamp = navigator.get_clock().now().to_msg()
-    shelf_item_pose.pose.position.x = shelf_positions[request_item_location][0]
-    shelf_item_pose.pose.position.y = shelf_positions[request_item_location][1]
-    shelf_item_pose.pose.orientation.z = 1.0
-    shelf_item_pose.pose.orientation.x = shelf_orientation_quaternion[0]
-    shelf_item_pose.pose.orientation.y = shelf_orientation_quaternion[1]
-    shelf_item_pose.pose.orientation.z = shelf_orientation_quaternion[2]
-    shelf_item_pose.pose.orientation.w = shelf_orientation_quaternion[3]
 
-    print('Received request for item picking at ' + request_item_location + '.')
-    navigator.goToPose(shelf_item_pose)
+    def go_to_pose(self, position, task_name):
+        pose = PoseStamped()
+        pose.header.frame_id = 'map'
+        pose.header.stamp = self.navigator.get_clock().now().to_msg()
+        pose.pose.position.x = position[0]
+        pose.pose.position.y = position[1]
+        quaternion = self.euler_to_quaternion(0, 0, position[2])
+        pose.pose.orientation.x = quaternion[0]
+        pose.pose.orientation.y = quaternion[1]
+        pose.pose.orientation.z = quaternion[2]
+        pose.pose.orientation.w = quaternion[3]
 
-   
-    i = 0
-    while not navigator.isTaskComplete():
-        i = i + 1
-        feedback = navigator.getFeedback()
-        if feedback and i % 5 == 0:
-            print('Estimated time of arrival at ' + request_item_location +
-                  ' for worker: ' + '{0:.0f}'.format(
-                      Duration.from_msg(feedback.estimated_time_remaining).nanoseconds / 1e9)
-                  + ' seconds.')
+        print(f'Received request for {task_name} at {position}.')
+        self.navigator.goToPose(pose)
 
-    result = navigator.getResult()
-    if result == TaskResult.SUCCEEDED:
-        print('Got product from ' + request_item_location +
-              '! Bringing product to shipping destination (' + request_destination + ')...')
-        shipping_destination = PoseStamped()
-        shipping_destination.header.frame_id = 'map'
-        shipping_destination.header.stamp = navigator.get_clock().now().to_msg()
-        shipping_destination.pose.position.x = shipping_destinations[request_destination][0]
-        shipping_destination.pose.position.y = shipping_destinations[request_destination][1]
-        shipping_destination.pose.orientation.z = 1.0
-        shipping_destination.pose.orientation.w = shipping_destinations[request_destination][2]
-        navigator.goToPose(shipping_destination)
+        while not self.navigator.isTaskComplete():
+            pass
 
-    elif result == TaskResult.CANCELED:
-        print('Task at ' + request_item_location +
-              ' was canceled. Returning to staging point...')
-        initial_pose.header.stamp = navigator.get_clock().now().to_msg()
-        navigator.goToPose(initial_pose)
-
-    elif result == TaskResult.FAILED:
-        print('Task at ' + request_item_location + ' failed!')
+    def handle_navigation_failure(self, result, location):
+        if result == TaskResult.CANCELED:
+            print(f'Task at {location} was canceled. Returning to staging point...')
+        elif result == TaskResult.FAILED:
+            print(f'Task at {location} failed!')
         exit(-1)
 
-    while not navigator.isTaskComplete():
-        pass
 
-    exit(0)
 
+def main(args=None):
+    rclpy.init(args=args)
+    navigator = ShelfToShipNavigator()
+    
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
