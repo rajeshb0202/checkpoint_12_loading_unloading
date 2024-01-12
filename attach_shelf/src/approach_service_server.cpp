@@ -15,17 +15,18 @@ using std::placeholders::_1;
 using std::placeholders::_2;
 using MyCustomServiceMessage = msgs_attach_shelf::srv::GoToLoading;
 
-class ApproachServiceServer : public rclcpp::Node  // Ensure this class name is what you intended
+class ApproachServiceServer : public rclcpp::Node  
 {
 public:
-    ApproachServiceServer() : Node("approach_service_server_node")  // Constructor definition corrected
+    ApproachServiceServer() : Node("approach_service_server_node")  
     {
 
         number_table_legs_detected = 0;
         move_robot_status = false;
         publish_tf_cart_frame_status = false;
-        tf_listener_status = false;
-        moved_near_the_cart_status = false;
+        
+        tf_published_status = false;
+        reached_near_the_cart_status = false;
         moved_under_the_cart_status = false;
         first_time_moving_underneath_the_cart = true;
 
@@ -65,25 +66,33 @@ public:
 private:
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
-        odom_msg_ = msg;
-        cuurent_x = odom_msg_->pose.pose.position.x;
-        cuurent_y = odom_msg_->pose.pose.position.y;
+            odom_msg_ = msg;
+            current_x = odom_msg_->pose.pose.position.x;
+            current_y = odom_msg_->pose.pose.position.y;
     }
+
+
+    void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+    {
+            scan_msg_ = msg;
+            detect_table_legs();
+    }
+
 
     void service_callback(const std::shared_ptr<MyCustomServiceMessage::Request> request,  const std::shared_ptr<MyCustomServiceMessage::Response> response)
     {
+        service_attach_shelf_called_status = true;
         if (number_table_legs_detected == 2)
         {
+            publish_tf_cart_frame_status = true;
             if (request->attach_to_shelf)
             {
-                publish_tf_cart_frame_status = true;
                 move_robot_status = true;
                 RCLCPP_INFO(this->get_logger(), "moving status: True");
                 response->complete = true;
             }
             else if (!request->attach_to_shelf)
             {
-                publish_tf_cart_frame_status = true;
                 move_robot_status = false;
                 RCLCPP_INFO(this->get_logger(), "moving status: False");
             }
@@ -91,6 +100,7 @@ private:
         else if(number_table_legs_detected < 2)
         {
             response->complete = false;
+            RCLCPP_INFO(this->get_logger(), "Number of shelf legs detected less than 2. So aborting the service.");
         }
     }
 
@@ -98,55 +108,58 @@ private:
 
     void timer_callback()
     {
-        if (move_robot_status && tf_listener_status && !moved_near_the_cart_status)
+        if (service_attach_shelf_called_status)
         {
-            //get the transform between the cart and the robot
-            geometry_msgs::msg::TransformStamped transformStamped;
-            try
+            if (move_robot_status && tf_published_status && !reached_near_the_cart_status)
             {
-                transformStamped = tf_buffer_->lookupTransform(base_frame, child_frame, tf2::TimePointZero);
-            }
-            catch (tf2::TransformException &ex)
-            {
-                RCLCPP_INFO(this->get_logger(), "tf listener failed ");
-                RCLCPP_WARN(this->get_logger(), "%s", ex.what());
-                return;
-            }
+                //get the transform between the cart and the robot
+                geometry_msgs::msg::TransformStamped transformStamped;
+                try
+                {
+                    transformStamped = tf_buffer_->lookupTransform(base_frame, child_frame, tf2::TimePointZero);
+                }
+                catch (tf2::TransformException &ex)
+                {
+                    RCLCPP_INFO(this->get_logger(), "tf listener failed ");
+                    RCLCPP_WARN(this->get_logger(), "%s", ex.what());
+                    return;
+                }
 
-            //get the distance between the cart and the robot
-            float error_distance = sqrt(pow(transformStamped.transform.translation.x, 2) + pow(transformStamped.transform.translation.y, 2));
-            float error_yaw= atan2(transformStamped.transform.translation.y, transformStamped.transform.translation.x);
+                //get the distance between the cart and the robot
+                float error_distance = sqrt(pow(transformStamped.transform.translation.x, 2) + pow(transformStamped.transform.translation.y, 2));
+                float error_yaw= atan2(transformStamped.transform.translation.y, transformStamped.transform.translation.x);
 
-            //if the distance is greater than distance gap threshold, then move the robot or else stop the robot.
-            if (error_distance > distance_gap_threshold)
-            {
-                vel_msg_.linear.x = translation_speed;
-                vel_msg_.angular.z = error_yaw * angular_speed;
+                //if the distance is greater than distance gap threshold, then move the robot or else stop the robot.
+                if (error_distance > distance_gap_threshold)
+                {
+                    vel_msg_.linear.x = translation_speed;
+                    vel_msg_.angular.z = error_yaw * angular_speed;
+                }
+                else
+                {
+                    vel_msg_.linear.x = 0;
+                    vel_msg_.angular.z = 0;
+                    reached_near_the_cart_status = true;
+                }
+
+                vel_publisher_->publish(vel_msg_);
             }
             else
             {
                 vel_msg_.linear.x = 0;
                 vel_msg_.angular.z = 0;
-                moved_near_the_cart_status = true;
+                vel_publisher_->publish(vel_msg_);
             }
 
-            vel_publisher_->publish(vel_msg_);
-        }
-        else
-        {
-            vel_msg_.linear.x = 0;
-            vel_msg_.angular.z = 0;
-            vel_publisher_->publish(vel_msg_);
-        }
+            if (reached_near_the_cart_status && !moved_under_the_cart_status)
+            {
+                move_underneath_the_cart();
+            }
 
-        if (moved_near_the_cart_status && !moved_under_the_cart_status)
-        {
-            move_underneath_the_cart();
-        }
-
-        if (moved_under_the_cart_status && !elevator_up_status)
-        {
-            elevator_up();
+            if (moved_under_the_cart_status && !elevator_up_status)
+            {
+                elevator_up();
+            }
         }
 
     }
@@ -155,12 +168,12 @@ private:
     {
         if (first_time_moving_underneath_the_cart)
         {
-            start_x = cuurent_x;
-            start_y = cuurent_y;
+            start_x = current_x;
+            start_y = current_y;
             first_time_moving_underneath_the_cart = false;
         }
         
-        float distance_moved = sqrt(pow((cuurent_x - start_x), 2) + pow((cuurent_y - start_y), 2));
+        float distance_moved = sqrt(pow((current_x - start_x), 2) + pow((current_y - start_y), 2));
         //RCLCPP_INFO(this->get_logger(), "distance moved: %f", distance_moved);
 
         if (distance_moved < distance_to_be_moved_underneath)
@@ -185,15 +198,10 @@ private:
         elevator_up_publisher_->publish(up_msg);
         elevator_up_status = true;
         RCLCPP_INFO(this->get_logger(), "lifted the shelf up successfully");
+        service_attach_shelf_called_status = false;
     }
 
 
-
-    void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
-    {
-        scan_msg_ = msg;
-        detect_table_legs();
-    }
 
 
     void detect_table_legs()
@@ -305,7 +313,7 @@ private:
         tf_broadcaster_->sendTransform(transformStamped);
         //RCLCPP_INFO(this->get_logger(), "published the tf frame of the cart");
 
-        tf_listener_status = true;
+        tf_published_status = true;
     }
 
 
@@ -329,7 +337,7 @@ private:
     geometry_msgs::msg::Twist vel_msg_;
     nav_msgs::msg::Odometry::SharedPtr odom_msg_;
 
-    float translation_speed = 0.2; 
+    float translation_speed = 0.5; 
     float angular_speed = 0.2;
     int intensity_threshold = 8000;
     float distance_gap_threshold = 0.06;
@@ -343,18 +351,19 @@ private:
     int number_table_legs_detected;
     float mid_point_x, mid_point_y;
     float start_x, start_y;
-    float cuurent_x, cuurent_y;
+    float current_x, current_y;
     std::string x_coordinate = "x";
     std::string y_coordinate = "y";
 
 
-    bool tf_listener_status;            //whether to start the tf listener or not
+    bool tf_published_status;            //whether to start the tf listener or not
     bool move_robot_status;             //whether to move the robot or not
     bool publish_tf_cart_frame_status;  //whether to publish the tf frame of the cart or not
-    bool moved_near_the_cart_status;    //whether the robot has moved near the cart or not
+    bool reached_near_the_cart_status;    //whether the robot has moved near the cart or not
     bool moved_under_the_cart_status;   //whether the robot has moved under the cart or not
     bool first_time_moving_underneath_the_cart; //whether the robot has moved under the cart for the first time or not
     bool elevator_up_status;            //whether the elevator has moved up or not
+    bool service_attach_shelf_called_status;
 
 
 };
@@ -366,7 +375,7 @@ private:
 int main(int argc, char* argv[])
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<ApproachServiceServer>());  // Ensure the class name matches
+    rclcpp::spin(std::make_shared<ApproachServiceServer>());  
     rclcpp::shutdown();
     return 0;
 }
