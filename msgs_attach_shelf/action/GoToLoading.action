@@ -1,0 +1,5 @@
+bool attach_to_shelf
+---
+bool complete
+---
+string feedback_operation_status

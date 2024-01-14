@@ -1,6 +1,6 @@
 #include "geometry_msgs/msg/detail/twist__struct.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "msgs_attach_shelf/action/go_to_loading.hpp"
+#include "msgs_attach_shelf/srv/go_to_loading.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -8,19 +8,17 @@
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "std_msgs/msg/empty.hpp"
-#include "rclcpp_action/rclcpp_action.hpp"
 
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-using AttachShelfActionMessage = msgs_attach_shelf::action::GoToLoading;
-using GoalHandleLoading = rclcpp_action::ServerGoalHandle<AttachShelfActionMessage>;
+using MyCustomServiceMessage = msgs_attach_shelf::srv::GoToLoading;
 
-class ApproachActionServer : public rclcpp::Node  
+class ApproachServiceServer : public rclcpp::Node  
 {
 public:
-    ApproachActionServer() : Node("approach_service_server_node")  
+    ApproachServiceServer() : Node("approach_service_server_node")  
     {
 
         number_table_legs_detected = 0;
@@ -44,25 +42,22 @@ public:
 
         //laser scan subscriber
         scan_subscriber_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-            "/scan", 10, std::bind(&ApproachActionServer::scan_callback, this, _1), scan_subscription_options_);
+            "/scan", 10, std::bind(&ApproachServiceServer::scan_callback, this, _1), scan_subscription_options_);
         
         //tf broadcaster
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
         vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("robot/cmd_vel", 10);
         elevator_up_publisher_ = this->create_publisher<std_msgs::msg::Empty>("elevator_up", 10);
-        timer_ = this->create_wall_timer(50ms, std::bind(&ApproachActionServer::timer_callback, this), scan_callback_group_);
+        timer_ = this->create_wall_timer(50ms, std::bind(&ApproachServiceServer::timer_callback, this), scan_callback_group_);
 
         tf_buffer_ =  std::make_unique<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         //Adding service to the server
-        this->action_server_ = rclcpp_action::create_server<AttachShelfActionMessage>(this, "attach_shelf_action", 
-                                                                                    std::bind(&ApproachActionServer::handle_goal, this, _1, _2),
-                                                                                    std::bind(&ApproachActionServer::handle_cancel, this, _1),
-                                                                                    std::bind(&ApproachActionServer::handle_accepted, this, _1));
+        service_ = this->create_service<MyCustomServiceMessage>("approach_service", std::bind(&ApproachServiceServer::service_callback, this, _1, _2));    
 
-        odom_subscriber_ = this->create_subscription<nav_msgs::msg::Odometry>("/odom", 10, std::bind(&ApproachActionServer::odom_callback, this, _1), odom_subscription_options_);
+        odom_subscriber_ = this->create_subscription<nav_msgs::msg::Odometry>("/odom", 10, std::bind(&ApproachServiceServer::odom_callback, this, _1), odom_subscription_options_);
 
 
     }
@@ -70,34 +65,8 @@ public:
 
 
 private:
-    rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const AttachShelfActionMessage::Goal> goal)
-    {
-        RCLCPP_INFO(this->get_logger(), "Received goal request %s", goal->attach_to_shelf ? "true" : "false");
-        (void)uuid;
-        if (!goal->attach_to_shelf)
-        {
-            return rclcpp_action::GoalResponse::REJECT;
-        }
-        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-    }
-
-    rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleLoading> goal_handle)
-    {
-        //RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
-        (void)goal_handle;
-        return rclcpp_action::CancelResponse::ACCEPT;
-    }
-
-    void handle_accepted(const std::shared_ptr<GoalHandleLoading> goal_handle)
-    {
-        std::thread{std::bind(&ApproachActionServer::execute, this, _1), goal_handle}.detach();
-    }
-
-
-
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
-            //RCLCPP_INFO(this->get_logger(), "inside odom callback method");
             odom_msg_ = msg;
             current_x = odom_msg_->pose.pose.position.x;
             current_y = odom_msg_->pose.pose.position.y;
@@ -106,57 +75,36 @@ private:
 
     void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
     {
-            //RCLCPP_INFO(this->get_logger(), "inside scan callback method");
             scan_msg_ = msg;
             detect_table_legs();
     }
 
 
-    void execute(const std::shared_ptr<GoalHandleLoading> goal_handle)
+    void service_callback(const std::shared_ptr<MyCustomServiceMessage::Request> request,  const std::shared_ptr<MyCustomServiceMessage::Response> response)
     {
-        RCLCPP_INFO(this->get_logger(), "Executing goal");
-        bool loop_running_status = true;
-
-        rclcpp::Rate loop_rate(1);
-        const auto goal = goal_handle->get_goal();
-        auto feedback = std::make_shared<AttachShelfActionMessage::Feedback>();
-        auto & message = feedback->feedback_operation_status;
-        message = "Attaching to shelf operation going on";
-        auto result = std::make_shared<AttachShelfActionMessage::Result>();
-        
-        while(loop_running_status && rclcpp::ok())
+        service_attach_shelf_called_status = true;
+        if (number_table_legs_detected == 2)
         {
-            if (goal_handle -> is_canceling() || number_table_legs_detected < 2)
+            publish_tf_cart_frame_status = true;
+            if (request->attach_to_shelf)
+            {
+                move_robot_status = true;
+                RCLCPP_INFO(this->get_logger(), "Started the service");
+                this->service_response_ = response;
+            }
+            else if (!request->attach_to_shelf)
             {
                 move_robot_status = false;
-                result->complete = false;
-                goal_handle->canceled(result);
-                if (number_table_legs_detected < 2)
-                {
-                    RCLCPP_INFO(this->get_logger(), "number of table legs detected is less than 2.");
-                }
-                RCLCPP_INFO(this->get_logger(), "Goal Cancelled");
+                RCLCPP_INFO(this->get_logger(), "Not moving status");
+                response->complete = false;
+                operation_complete_status = false;
             }
-
-            else if (number_table_legs_detected == 2)
-            {
-                
-                action_attach_shelf_called_status = true;
-                move_robot_status = true;
-                publish_tf_cart_frame_status = true;
-                goal_handle->publish_feedback(feedback);
-
-            }
-
-            //check if the goal is done
-            if (rclcpp::ok() && operation_complete_status)
-            {
-                result->complete = true;
-                loop_running_status = false;
-                goal_handle->succeed(result);
-                RCLCPP_INFO(this->get_logger(), "Goal Succeeded");
-            }
-            loop_rate.sleep();
+        }
+        else if(number_table_legs_detected < 2)
+        {
+            response->complete = false;
+            operation_complete_status = false;
+            RCLCPP_INFO(this->get_logger(), "Number of shelf legs detected less than 2. So aborting the service.");
         }
     }
 
@@ -164,10 +112,8 @@ private:
 
     void timer_callback()
     {
-        if (action_attach_shelf_called_status)
+        if (service_attach_shelf_called_status)
         {
-            //for debugging
-            //RCLCPP_INFO(this->get_logger(), "attach_shelf_called status: %s", action_attach_shelf_called_status?"true":"false");
             if (move_robot_status && tf_published_status && !reached_near_the_cart_status)
             {
                 //get the transform between the cart and the robot
@@ -214,6 +160,11 @@ private:
                 elevator_up();
             }
 
+            if (operation_complete_status && this->service_response_ != nullptr) 
+            {
+                service_response_->complete = true;
+                service_response_ = nullptr; // Reset for next service call
+            }
         }
 
     }
@@ -252,7 +203,7 @@ private:
         elevator_up_publisher_->publish(up_msg);
         elevator_up_status = true;
         RCLCPP_INFO(this->get_logger(), "lifted the shelf up successfully");
-        action_attach_shelf_called_status = false;
+        service_attach_shelf_called_status = false;
         operation_complete_status = true;
     }
 
@@ -379,8 +330,9 @@ private:
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::shared_ptr<MyCustomServiceMessage::Response> service_response_;
     rclcpp::TimerBase::SharedPtr timer_;   
-    rclcpp_action::Server<AttachShelfActionMessage>::SharedPtr action_server_;
+    rclcpp::Service<MyCustomServiceMessage>::SharedPtr service_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
     rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
     rclcpp::CallbackGroup::SharedPtr scan_callback_group_;
@@ -392,7 +344,7 @@ private:
     geometry_msgs::msg::Twist vel_msg_;
     nav_msgs::msg::Odometry::SharedPtr odom_msg_;
 
-    float translation_speed = 0.2; 
+    float translation_speed = 0.; 
     float angular_speed = 0.2;
     int intensity_threshold = 8000;
     float distance_gap_threshold = 0.06;
@@ -418,7 +370,7 @@ private:
     bool moved_under_the_cart_status;   //whether the robot has moved under the cart or not
     bool first_time_moving_underneath_the_cart; //whether the robot has moved under the cart for the first time or not
     bool elevator_up_status;            //whether the elevator has moved up or not
-    bool action_attach_shelf_called_status;
+    bool service_attach_shelf_called_status;
     bool operation_complete_status;
 
 
@@ -431,7 +383,7 @@ private:
 int main(int argc, char* argv[])
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<ApproachActionServer>());  
+    rclcpp::spin(std::make_shared<ApproachServiceServer>());  
     rclcpp::shutdown();
     return 0;
 }

@@ -24,12 +24,12 @@ endif()
 
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-		"srv/GoToLoading.srv"
+		"action/GoToLoading.action"
 )
 
 install (
 	DIRECTORY
-		srv
+		action
 	DESTINATION
 		share/${PROJECT_NAME}
 )
