@@ -290,7 +290,7 @@ private:
         vel_msg_.linear.x = translation_speed;
         vel_msg_.angular.z = 0;
 
-        for (int i =0; i< 3; i++)
+        for (int i =0; i< time_to_move_loading_point; i++)
         {
             vel_publisher_->publish(vel_msg_);
             loop_rate.sleep();
@@ -441,6 +441,7 @@ private:
     int intensity_threshold = 8000;
     float distance_gap_threshold = 0.06;
     float distance_to_be_moved_underneath = 0.35;
+    int time_to_move_loading_point = 18;
     std::string parent_frame = "robot_front_laser_base_link";
     std::string child_frame = "cart_frame";
     std::string base_frame = "robot_base_link";
