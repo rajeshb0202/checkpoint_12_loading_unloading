@@ -9,6 +9,8 @@
 #include "tf2_ros/buffer.h"
 #include "std_msgs/msg/empty.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include <tf2/LinearMath/Quaternion.h>
+
 
 
 using namespace std::chrono_literals;
@@ -28,6 +30,8 @@ public:
         reached_near_the_cart_status = false;
         moved_under_the_cart_status = false;
         first_time_moving_underneath_the_cart = true;
+        back_to_loading_position_status = false;
+        rotated_180_status = false;
         operation_complete_status = false;
 
         //laser scan subscriber
@@ -89,6 +93,14 @@ private:
             odom_msg_ = msg;
             current_x = odom_msg_->pose.pose.position.x;
             current_y = odom_msg_->pose.pose.position.y;
+
+            //finding out the current yaw
+            tf2::Quaternion q(msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z,msg->pose.pose.orientation.w);
+            tf2::Matrix3x3 m(q);
+            double roll, pitch;
+
+            m.getRPY(roll, pitch, current_yaw);
+
     }
 
 
@@ -192,16 +204,25 @@ private:
             move_underneath_the_cart();
         }
 
-        if (moved_under_the_cart_status && !elevator_up_status)
+        if (moved_under_the_cart_status && !rotated_180_status)
+        {
+            rotate_180();
+        }
+
+        if (rotated_180_status && !elevator_up_status)
         {
             elevator_up();
+        }
+
+        if (elevator_up_status && !back_to_loading_position_status)
+        {
+            back_to_loading_position();
         }
 
     }
 
     void move_underneath_the_cart()
     {
-        RCLCPP_INFO(this->get_logger(), "moving under the cart");           //debug
         if (first_time_moving_underneath_the_cart)
         {
             start_x = current_x;
@@ -212,7 +233,7 @@ private:
         float distance_moved = sqrt(pow((current_x - start_x), 2) + pow((current_y - start_y), 2));
         //RCLCPP_INFO(this->get_logger(), "distance moved: %f", distance_moved);
 
-        RCLCPP_INFO(this->get_logger(), "distance_moved: %f", distance_moved);           //debug
+
         if (distance_moved < distance_to_be_moved_underneath)
         {
             vel_msg_.linear.x = translation_speed;
@@ -226,8 +247,32 @@ private:
             moved_under_the_cart_status = true;
             RCLCPP_INFO(this->get_logger(), "moved underneath the cart successfully");
             vel_publisher_->publish(vel_msg_);
+            // operation_complete_status = true;                       //for debug
         }
         //stop the robot at the end        
+    }
+
+    void rotate_180()
+    {
+        float yaw_threshold = 0.1;
+        float target_yaw = 1.57;
+        //rotate the robot until the current_yaw is +1.57 radians
+        if (current_yaw < target_yaw)
+        {
+            vel_msg_.linear.x = 0;
+            vel_msg_.angular.z = angular_speed;
+            vel_publisher_->publish(vel_msg_);
+            //RCLCPP_INFO(this->get_logger(), "current_yaw: %f", current_yaw);      //for debug
+        }
+        else
+        {
+            vel_msg_.linear.x = 0;
+            vel_msg_.angular.z = 0;
+            vel_publisher_->publish(vel_msg_);
+            rotated_180_status = true;
+            RCLCPP_INFO(this->get_logger(), "Successfully rotated towards loading position");
+            //operation_complete_status = true;                       //for debug
+        }
     }
 
     void elevator_up()
@@ -236,6 +281,26 @@ private:
         elevator_up_publisher_->publish(up_msg);
         elevator_up_status = true;
         RCLCPP_INFO(this->get_logger(), "lifted the shelf up successfully");
+    }
+
+    void back_to_loading_position()
+    {
+        rclcpp::WallRate loop_rate(2);       //2Hz
+        
+        vel_msg_.linear.x = translation_speed;
+        vel_msg_.angular.z = 0;
+
+        for (int i =0; i< 3; i++)
+        {
+            vel_publisher_->publish(vel_msg_);
+            loop_rate.sleep();
+        }
+        
+        vel_msg_.linear.x = 0;
+        vel_msg_.angular.z = 0;
+        vel_publisher_->publish(vel_msg_);
+
+        back_to_loading_position_status = true;
         operation_complete_status = true;
     }
 
@@ -372,7 +437,7 @@ private:
     nav_msgs::msg::Odometry::SharedPtr odom_msg_;
 
     float translation_speed = 0.2; 
-    float angular_speed = 0.2;
+    float angular_speed = 0.4;
     int intensity_threshold = 8000;
     float distance_gap_threshold = 0.06;
     float distance_to_be_moved_underneath = 0.35;
@@ -388,6 +453,7 @@ private:
     float current_x, current_y;
     std::string x_coordinate = "x";
     std::string y_coordinate = "y";
+    double current_yaw;
 
 
     bool tf_published_status;            //whether to start the tf listener or not
@@ -396,6 +462,8 @@ private:
     bool moved_under_the_cart_status;   //whether the robot has moved under the cart or not
     bool first_time_moving_underneath_the_cart; //whether the robot has moved under the cart for the first time or not
     bool elevator_up_status;            //whether the elevator has moved up or not
+    bool rotated_180_status;            // whether the robot has rotated 180 degrees after placing underneath the shelf
+    bool back_to_loading_position_status; //whjether the robot is back to its loading position
     bool operation_complete_status;
 
 
