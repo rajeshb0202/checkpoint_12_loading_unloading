@@ -25,33 +25,21 @@ public:
 
         number_table_legs_detected = 0;
         move_robot_status = false;
-        publish_tf_cart_frame_status = false;
-        
-        tf_published_status = false;
         reached_near_the_cart_status = false;
         moved_under_the_cart_status = false;
         first_time_moving_underneath_the_cart = true;
         operation_complete_status = false;
 
-        odom_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-        scan_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-
-        odom_subscription_options_ = rclcpp::SubscriptionOptions();
-        odom_subscription_options_.callback_group = odom_callback_group_;
-
-        scan_subscription_options_ = rclcpp::SubscriptionOptions();
-        scan_subscription_options_.callback_group = scan_callback_group_;
-
         //laser scan subscriber
         scan_subscriber_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-            "/scan", 10, std::bind(&ApproachActionServer::scan_callback, this, _1), scan_subscription_options_);
+            "/scan", 10, std::bind(&ApproachActionServer::scan_callback, this, _1));
         
         //tf broadcaster
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
         vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("robot/cmd_vel", 10);
         elevator_up_publisher_ = this->create_publisher<std_msgs::msg::Empty>("elevator_up", 10);
-        timer_ = this->create_wall_timer(50ms, std::bind(&ApproachActionServer::timer_callback, this), scan_callback_group_);
+        timer_ = this->create_wall_timer(50ms, std::bind(&ApproachActionServer::timer_callback, this));
 
         tf_buffer_ =  std::make_unique<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -62,7 +50,7 @@ public:
                                                                                     std::bind(&ApproachActionServer::handle_cancel, this, _1),
                                                                                     std::bind(&ApproachActionServer::handle_accepted, this, _1));
 
-        odom_subscriber_ = this->create_subscription<nav_msgs::msg::Odometry>("/odom", 10, std::bind(&ApproachActionServer::odom_callback, this, _1), odom_subscription_options_);
+        odom_subscriber_ = this->create_subscription<nav_msgs::msg::Odometry>("/odom", 10, std::bind(&ApproachActionServer::odom_callback, this, _1));
 
 
     }
@@ -116,7 +104,6 @@ private:
     {
         RCLCPP_INFO(this->get_logger(), "Executing goal");
         bool loop_running_status = true;
-
         rclcpp::Rate loop_rate(1);
         const auto goal = goal_handle->get_goal();
         auto feedback = std::make_shared<AttachShelfActionMessage::Feedback>();
@@ -126,27 +113,17 @@ private:
         
         while(loop_running_status && rclcpp::ok())
         {
-            if (goal_handle -> is_canceling() || number_table_legs_detected < 2)
+            if (goal_handle -> is_canceling())
             {
                 move_robot_status = false;
                 result->complete = false;
                 goal_handle->canceled(result);
-                if (number_table_legs_detected < 2)
-                {
-                    RCLCPP_INFO(this->get_logger(), "number of table legs detected is less than 2.");
-                }
                 RCLCPP_INFO(this->get_logger(), "Goal Cancelled");
             }
 
-            else if (number_table_legs_detected == 2)
-            {
-                
-                action_attach_shelf_called_status = true;
-                move_robot_status = true;
-                publish_tf_cart_frame_status = true;
-                goal_handle->publish_feedback(feedback);
+            move_robot_status = true;
+            goal_handle->publish_feedback(feedback);
 
-            }
 
             //check if the goal is done
             if (rclcpp::ok() && operation_complete_status)
@@ -154,7 +131,11 @@ private:
                 result->complete = true;
                 loop_running_status = false;
                 goal_handle->succeed(result);
+                vel_msg_.linear.x = 0;
+                vel_msg_.angular.z = 0;
+                vel_publisher_->publish(vel_msg_);
                 RCLCPP_INFO(this->get_logger(), "Goal Succeeded");
+
             }
             loop_rate.sleep();
         }
@@ -164,62 +145,63 @@ private:
 
     void timer_callback()
     {
-        if (action_attach_shelf_called_status)
+        
+        //RCLCPP_INFO(this->get_logger(), "attach_shelf_called status: %s", reached_near_the_cart_status ?"true":"false");        //for debugging
+        if (move_robot_status && tf_published_status && !reached_near_the_cart_status)
         {
-            //for debugging
-            //RCLCPP_INFO(this->get_logger(), "attach_shelf_called status: %s", action_attach_shelf_called_status?"true":"false");
-            if (move_robot_status && tf_published_status && !reached_near_the_cart_status)
+            //get the transform between the cart and the robot
+            geometry_msgs::msg::TransformStamped transformStamped;
+            try
             {
-                //get the transform between the cart and the robot
-                geometry_msgs::msg::TransformStamped transformStamped;
-                try
-                {
-                    transformStamped = tf_buffer_->lookupTransform(base_frame, child_frame, tf2::TimePointZero);
-                }
-                catch (tf2::TransformException &ex)
-                {
-                    RCLCPP_INFO(this->get_logger(), "tf listener failed ");
-                    RCLCPP_WARN(this->get_logger(), "%s", ex.what());
-                    return;
-                }
+                transformStamped = tf_buffer_->lookupTransform(base_frame, child_frame, tf2::TimePointZero);
+            }
+            catch (tf2::TransformException &ex)
+            {
+                RCLCPP_INFO(this->get_logger(), "tf listener failed ");
+                RCLCPP_WARN(this->get_logger(), "%s", ex.what());
+                return;
+            }
 
-                //get the distance between the cart and the robot
-                float error_distance = sqrt(pow(transformStamped.transform.translation.x, 2) + pow(transformStamped.transform.translation.y, 2));
-                float error_yaw= atan2(transformStamped.transform.translation.y, transformStamped.transform.translation.x);
+            //get the distance between the cart and the robot
+            float error_distance = sqrt(pow(transformStamped.transform.translation.x, 2) + pow(transformStamped.transform.translation.y, 2));
+            float error_yaw= atan2(transformStamped.transform.translation.y, transformStamped.transform.translation.x);
 
-                //if the distance is greater than distance gap threshold, then move the robot or else stop the robot.
-                if (error_distance > distance_gap_threshold)
-                {
-                    vel_msg_.linear.x = translation_speed;
-                    vel_msg_.angular.z = error_yaw * angular_speed;
-                }
-                else if (error_distance < distance_gap_threshold)
-                {
-                    vel_msg_.linear.x = 0;
-                    vel_msg_.angular.z = 0;
-                    reached_near_the_cart_status = true;
-                }
-
+            //if the distance is greater than distance gap threshold, then move the robot or else stop the robot.
+            if (error_distance > distance_gap_threshold)
+            {
+                vel_msg_.linear.x = translation_speed;
+                vel_msg_.angular.z = error_yaw * angular_speed;
+                //RCLCPP_INFO(this->get_logger(), "approaching the cart");            //debug
                 vel_publisher_->publish(vel_msg_);
             }
+            else if (error_distance < distance_gap_threshold)
+            {
+                vel_msg_.linear.x = 0;
+                vel_msg_.angular.z = 0;
+                reached_near_the_cart_status = true;
+                //RCLCPP_INFO(this->get_logger(), "Reached near the cart");             //debug
+                vel_publisher_->publish(vel_msg_);
+            }
+
             
+        }
+        
 
-            if (reached_near_the_cart_status && !moved_under_the_cart_status)
-            {
-                move_underneath_the_cart();
-            }
+        if (reached_near_the_cart_status && !moved_under_the_cart_status)
+        {
+            move_underneath_the_cart();
+        }
 
-            if (moved_under_the_cart_status && !elevator_up_status)
-            {
-                elevator_up();
-            }
-
+        if (moved_under_the_cart_status && !elevator_up_status)
+        {
+            elevator_up();
         }
 
     }
 
     void move_underneath_the_cart()
     {
+        RCLCPP_INFO(this->get_logger(), "moving under the cart");           //debug
         if (first_time_moving_underneath_the_cart)
         {
             start_x = current_x;
@@ -230,10 +212,12 @@ private:
         float distance_moved = sqrt(pow((current_x - start_x), 2) + pow((current_y - start_y), 2));
         //RCLCPP_INFO(this->get_logger(), "distance moved: %f", distance_moved);
 
+        RCLCPP_INFO(this->get_logger(), "distance_moved: %f", distance_moved);           //debug
         if (distance_moved < distance_to_be_moved_underneath)
         {
             vel_msg_.linear.x = translation_speed;
             vel_msg_.angular.z = 0;
+            vel_publisher_->publish(vel_msg_);
         }
         else
         {
@@ -241,9 +225,9 @@ private:
             vel_msg_.angular.z = 0;
             moved_under_the_cart_status = true;
             RCLCPP_INFO(this->get_logger(), "moved underneath the cart successfully");
+            vel_publisher_->publish(vel_msg_);
         }
         //stop the robot at the end        
-        vel_publisher_->publish(vel_msg_);
     }
 
     void elevator_up()
@@ -252,7 +236,6 @@ private:
         elevator_up_publisher_->publish(up_msg);
         elevator_up_status = true;
         RCLCPP_INFO(this->get_logger(), "lifted the shelf up successfully");
-        action_attach_shelf_called_status = false;
         operation_complete_status = true;
     }
 
@@ -304,7 +287,7 @@ private:
         //RCLCPP_INFO(this->get_logger(), "number of table legs detected: %d", number_table_legs_detected);
 
         //if there are 2 legs detected, then find the middle point and publish the tf frame
-        if (number_table_legs_detected == 2 && publish_tf_cart_frame_status)
+        if (number_table_legs_detected == 2)
         {
             middle_point_table_legs(table_legs_indexes);
         }
@@ -382,10 +365,6 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;   
     rclcpp_action::Server<AttachShelfActionMessage>::SharedPtr action_server_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
-    rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
-    rclcpp::CallbackGroup::SharedPtr scan_callback_group_;
-    rclcpp::SubscriptionOptions odom_subscription_options_;
-    rclcpp::SubscriptionOptions scan_subscription_options_;
     rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr elevator_up_publisher_;
 
     sensor_msgs::msg::LaserScan::SharedPtr scan_msg_;
@@ -413,12 +392,10 @@ private:
 
     bool tf_published_status;            //whether to start the tf listener or not
     bool move_robot_status;             //whether to move the robot or not
-    bool publish_tf_cart_frame_status;  //whether to publish the tf frame of the cart or not
     bool reached_near_the_cart_status;    //whether the robot has moved near the cart or not
     bool moved_under_the_cart_status;   //whether the robot has moved under the cart or not
     bool first_time_moving_underneath_the_cart; //whether the robot has moved under the cart for the first time or not
     bool elevator_up_status;            //whether the elevator has moved up or not
-    bool action_attach_shelf_called_status;
     bool operation_complete_status;
 
 
