@@ -2,8 +2,11 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from rclpy.duration import Duration
+from rclpy.action import ActionClient
 import tf_transformations
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from msgs_attach_shelf.action import GoToLoading
+
 
 
 
@@ -12,12 +15,14 @@ class ShelfToShipNavigator(Node):
         super().__init__('shelf_to_ship_navigator')
 
         self.initial_position = [0.0, 0.0, 0.0]
-        self.loading_position = {"shelf_A": [5.75, 0.0, -1.57]}
+        self.loading_position = {"shelf": [5.75, 0.0, -1.57]}
         self.shipping_destinations = {"shipping_position": [0.7, -3.3, -1.57]}
-        self.shelf_raised = True
+        self.raise_shelf = False
+        self.shelf_raised = False
         self.navigator = BasicNavigator()
+        self._action_client = ActionClient(self, GoToLoading, '/attach_shelf_action')
         self.set_initial_pose()
-        self.execute_navigation_task('shelf_A', 'shipping_position')
+        self.execute_navigation_task('shelf', 'shipping_position')
 
 
 
@@ -46,16 +51,52 @@ class ShelfToShipNavigator(Node):
         self.navigator.waitUntilNav2Active()
 
         # Navigate to shelf position
-        self.go_to_pose(self.loading_position[request_item_location], 'shelf')
+        self.go_to_pose(self.loading_position[request_item_location], 'go_near_shelf')
 
         # Process navigation result
         result = self.navigator.getResult()
         if result == TaskResult.SUCCEEDED:
-            print("reached infornt of shelf")
-            if self.shelf_raised:
-                self.go_to_pose(self.shipping_destinations[request_destination], 'shipping')
+            print("reached infront of the shelf")
+            self.raise_shelf = True
         else:
             self.handle_navigation_failure(result, request_item_location)
+        if self.raise_shelf:
+            # call action
+            self.send_goal()
+            
+            #if the result of action returns true then shelf.raised = True
+
+        # if self.shelf_raised:
+        #     self.go_to_pose(self.shipping_destinations[request_destination], 'go_to_shipping_position')
+
+    def send_goal(self):
+        goal_msg = GoToLoading.Goal()
+        goal_msg.attach_to_shelf = True
+        self._action_client.wait_for_server()
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal rejected')
+            return
+        self.get_logger().info('Goal accepted')
+
+        self.get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        if result.complete:
+            self.shelf_raised = True
+            self.get_logger().info("successully raised the shelf and brought to open position")
+        else:
+            self.get_logger().info("Failed to raise the shelf or brought to open position")
+    
+
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        self.get_logger().info('Received feedback: {0}'.format(feedback.feedback_operation_status))
 
 
 
@@ -89,7 +130,7 @@ class ShelfToShipNavigator(Node):
 def main(args=None):
     rclpy.init(args=args)
     navigator = ShelfToShipNavigator()
-    
+    rclpy.spin(navigator)
     rclpy.shutdown()
 
 if __name__ == '__main__':

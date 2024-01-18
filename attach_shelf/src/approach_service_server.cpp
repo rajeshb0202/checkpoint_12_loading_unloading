@@ -254,7 +254,6 @@ private:
 
     void rotate_180()
     {
-        float yaw_threshold = 0.1;
         float target_yaw = 1.57;
         //rotate the robot until the current_yaw is +1.57 radians
         if (current_yaw < target_yaw)
