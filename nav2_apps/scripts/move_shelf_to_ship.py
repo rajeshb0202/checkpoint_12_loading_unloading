@@ -22,7 +22,7 @@ class ShelfToShipNavigator(Node):
         self.navigator = BasicNavigator()
         self._action_client = ActionClient(self, GoToLoading, '/attach_shelf_action')
         self.set_initial_pose()
-        self.execute_navigation_task('shelf', 'shipping_position')
+        self.execute_initial_navigation_task_and_send_goal('shelf')
 
 
 
@@ -47,33 +47,45 @@ class ShelfToShipNavigator(Node):
 
     
 
-    def execute_navigation_task(self, request_item_location, request_destination):
+    def execute_initial_navigation_task_and_send_goal(self, request_item_location):
         self.navigator.waitUntilNav2Active()
 
         # Navigate to shelf position
         self.go_to_pose(self.loading_position[request_item_location], 'go_near_shelf')
 
+        # Process navigation result for reaching the loading position
+        result1 = self.navigator.getResult()
+        if result1 == TaskResult.SUCCEEDED:
+            self.get_logger().info("reached infront of the shelf")
+            self.raise_shelf = True
+        else:
+            self.handle_navigation_failure(result1, request_item_location)
+
+        # perform shelf raise operation after completing the first navigation task
+        if self.raise_shelf:
+            # call action
+            self.get_logger().info("called the action /attach_server")
+            self.send_goal()
+
+
+    def proceed_to_shipping_destination(self):
+        self.get_logger().info("Moving to the shipping destination")
+        self.go_to_pose(self.shipping_destinations["shipping_position"], 'go_to_shipping_position')
+
         # Process navigation result
         result = self.navigator.getResult()
         if result == TaskResult.SUCCEEDED:
-            print("reached infront of the shelf")
-            self.raise_shelf = True
+            self.get_logger().info("Reached near the shipping destination.")
         else:
-            self.handle_navigation_failure(result, request_item_location)
-        if self.raise_shelf:
-            # call action
-            self.send_goal()
-            
-            #if the result of action returns true then shelf.raised = True
+            self.handle_navigation_failure(result, "shipping_position")
 
-        # if self.shelf_raised:
-        #     self.go_to_pose(self.shipping_destinations[request_destination], 'go_to_shipping_position')
 
     def send_goal(self):
         goal_msg = GoToLoading.Goal()
         goal_msg.attach_to_shelf = True
         self._action_client.wait_for_server()
-        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
@@ -81,22 +93,24 @@ class ShelfToShipNavigator(Node):
             self.get_logger().info('Goal rejected')
             return
         self.get_logger().info('Goal accepted')
-
-        self.get_result_future = goal_handle.get_result_async()
+        self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
         if result.complete:
             self.shelf_raised = True
+            # self.get_logger().info("shelf raised status", self.shelf_raised)       # for debug
             self.get_logger().info("successully raised the shelf and brought to open position")
+            #calling the second navigation task
+            self.proceed_to_shipping_destination()
         else:
             self.get_logger().info("Failed to raise the shelf or brought to open position")
     
 
     def feedback_callback(self, feedback_msg):
         feedback = feedback_msg.feedback
-        self.get_logger().info('Received feedback: {0}'.format(feedback.feedback_operation_status))
+        print('Received feedback: {0}'.format(feedback.feedback_operation_status))
 
 
 
@@ -121,6 +135,8 @@ class ShelfToShipNavigator(Node):
     def handle_navigation_failure(self, result, location):
         if result == TaskResult.CANCELED:
             print(f'Task at {location} was canceled. Returning to staging point...')
+            #add GoToPose to intial point if there is anything failed.
+
         elif result == TaskResult.FAILED:
             print(f'Task at {location} failed!')
         exit(-1)
