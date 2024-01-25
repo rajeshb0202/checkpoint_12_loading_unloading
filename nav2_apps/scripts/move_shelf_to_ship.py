@@ -21,7 +21,7 @@ class ShelfToShipNavigator(Node):
 
         self.initial_position = [0.0, 0.0, 0.0]
         self.loading_position = {"shelf": [5.75, 0.0, -1.57]}
-        self.shipping_destinations = {"shipping_position": [0.7, -3.3, -1.57]}
+        self.shipping_destinations = {"shipping_position": [0.7, -2.9, -1.57]}
         self.raise_shelf = False
         self.shelf_raised = False
         self.unloaded_shelf_status= False
@@ -45,19 +45,18 @@ class ShelfToShipNavigator(Node):
     
     def timer_callback(self):
         if (self.unloaded_shelf_status and not self.moved_back_status): 
-            self.get_logger().info("inside the timer callback method")
             vel_msg = Twist()
-            vel_msg.linear.x = -1 * self.linear_speed
+            vel_msg.linear.x = -1.0 * self.linear_speed
             vel_msg.angular.z = self.angular_speed
             # publish the velocity for certian time period
             for i in range (self.move_back_interval):   
                 self.get_logger().info("moving the robot out of the shelf")
                 self.vel_publisher.publish(vel_msg)
-                time.sleep(0.2)
+                time.sleep(0.5)
             #stop the robot after it backs to an open area
             self.moved_back_status = True
-            vel_msg.linear.x = 0
-            vel_msg.angular.z = 0
+            vel_msg.linear.x = 0.0
+            vel_msg.angular.z = 0.0
             self.vel_publisher.publish(vel_msg)
             self.timer.cancel()             #cancelling the timer after coming backout of the shelf
             self.get_logger().info("Came out of the shelf and calling navigation task to the intial position")
