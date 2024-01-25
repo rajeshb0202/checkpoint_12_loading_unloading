@@ -44,7 +44,6 @@ class ShelfToShipNavigator(Node):
             Point32(x=-half_side, y=-half_side, z=0.0),
             Point32(x=half_side, y=-half_side, z=0.0)
         ]
-
         square_footprint = Polygon()
         square_footprint.points = square_points
         self.get_logger().info("Changing robot's footprint to square")
@@ -95,6 +94,8 @@ class ShelfToShipNavigator(Node):
             self.send_goal()
 
 
+
+
     def proceed_to_shipping_destination(self):
         self.get_logger().info("Moving to the shipping destination")
         self.go_to_pose(self.shipping_destinations["shipping_position"], 'go_to_shipping_position')
@@ -103,6 +104,8 @@ class ShelfToShipNavigator(Node):
         result = self.navigator.getResult()
         if result == TaskResult.SUCCEEDED:
             self.get_logger().info("Reached near the shipping destination.")
+            #if succeded, unload the shelf at the shipping position
+            self.unload_shelf_at_shipping_position()
         else:
             self.handle_navigation_failure(result, "shipping_position")
 
@@ -121,9 +124,9 @@ class ShelfToShipNavigator(Node):
             return
         self.get_logger().info('Goal accepted')
         self._get_result_future = goal_handle.get_result_async()
-        self._get_result_future.add_done_callback(self.get_result_callback)
+        self._get_result_future.add_done_callback(self.get_load_shelf_result_callback)
 
-    def get_result_callback(self, future):
+    def get_load_shelf_result_callback(self, future):
         result = future.result().result
         if result.complete:
             self.shelf_raised = True
@@ -133,26 +136,22 @@ class ShelfToShipNavigator(Node):
             #change the robot footprint to square after bringing the shelf to the open position
             self.change_to_square_footprint()
             #calling the second navigation task
-            #self.proceed_to_shipping_destination()            this is hided for debugging other tasks
-            # self.execute_navigation_after_loading_shelf()
+            self.proceed_to_shipping_destination()            #this is hided for debugging other tasks
+            
         else:
             self.get_logger().info("Failed to raise the shelf or brought to open position")
         
-
-
-    def execute_navigation_after_loading_shelf(self):
+        
+    def unload_shelf_at_shipping_position(self):
             #unloading the shelf
             msg = Empty()
             self.elevator_down_publisher.publish(msg)
             self.get_logger().info("Successfully unloaded the shelf")
           
 
-
-
     def feedback_callback(self, feedback_msg):
         feedback = feedback_msg.feedback
         print('Received feedback: {0}'.format(feedback.feedback_operation_status))
-
 
 
     def go_to_pose(self, position, task_name):
