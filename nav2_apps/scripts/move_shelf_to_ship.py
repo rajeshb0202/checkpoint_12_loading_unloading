@@ -6,6 +6,9 @@ from rclpy.action import ActionClient
 import tf_transformations
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from msgs_attach_shelf.action import GoToLoading
+from std_msgs.msg import Empty
+from geometry_msgs.msg import Polygon, Point32
+import math
 
 
 
@@ -19,10 +22,34 @@ class ShelfToShipNavigator(Node):
         self.shipping_destinations = {"shipping_position": [0.7, -3.3, -1.57]}
         self.raise_shelf = False
         self.shelf_raised = False
+        self.side_length = 0.6
         self.navigator = BasicNavigator()
+        self.elevator_down_publisher = self.create_publisher(Empty, '/elevator_down', 10)
+        self.global_footprint_publisher = self.create_publisher(Polygon, '/global_costmap/footprint', 10)
+        self.local_footprint_publisher = self.create_publisher(Polygon, '/local_costmap/footprint', 10)
         self._action_client = ActionClient(self, GoToLoading, '/attach_shelf_action')
         self.set_initial_pose()
         self.execute_initial_navigation_task_and_send_goal('shelf')
+
+
+    def publish_footprint(self, polygon):
+        self.global_footprint_publisher.publish(polygon)
+        self.local_footprint_publisher.publish(polygon)
+
+    def change_to_square_footprint(self):
+        half_side = self.side_length / 2
+        square_points = [
+            Point32(x=half_side, y=half_side, z=0.0),
+            Point32(x=-half_side, y=half_side, z=0.0),
+            Point32(x=-half_side, y=-half_side, z=0.0),
+            Point32(x=half_side, y=-half_side, z=0.0)
+        ]
+
+        square_footprint = Polygon()
+        square_footprint.points = square_points
+        self.get_logger().info("Changing robot's footprint to square")
+        self.publish_footprint(square_footprint)
+
 
 
 
@@ -102,11 +129,25 @@ class ShelfToShipNavigator(Node):
             self.shelf_raised = True
             # self.get_logger().info("shelf raised status", self.shelf_raised)       # for debug
             self.get_logger().info("successully raised the shelf and brought to open position")
+
+            #change the robot footprint to square after bringing the shelf to the open position
+            self.change_to_square_footprint()
             #calling the second navigation task
-            self.proceed_to_shipping_destination()
+            #self.proceed_to_shipping_destination()            this is hided for debugging other tasks
+            # self.execute_navigation_after_loading_shelf()
         else:
             self.get_logger().info("Failed to raise the shelf or brought to open position")
-    
+        
+
+
+    def execute_navigation_after_loading_shelf(self):
+            #unloading the shelf
+            msg = Empty()
+            self.elevator_down_publisher.publish(msg)
+            self.get_logger().info("Successfully unloaded the shelf")
+          
+
+
 
     def feedback_callback(self, feedback_msg):
         feedback = feedback_msg.feedback

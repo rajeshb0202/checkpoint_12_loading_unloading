@@ -261,7 +261,7 @@ private:
             vel_msg_.linear.x = 0;
             vel_msg_.angular.z = angular_speed;
             vel_publisher_->publish(vel_msg_);
-            //RCLCPP_INFO(this->get_logger(), "current_yaw: %f", current_yaw);      //for debug
+            RCLCPP_INFO(this->get_logger(), "orienting towards openspace");      //for debug
         }
         else
         {
@@ -287,7 +287,7 @@ private:
         rclcpp::WallRate loop_rate(2);       //2Hz
         
         vel_msg_.linear.x = translation_speed;
-        vel_msg_.angular.z = 0;
+        vel_msg_.angular.z = angular_speed_back_loading;
 
         for (int i =0; i< time_to_move_loading_point; i++)
         {
@@ -437,10 +437,11 @@ private:
 
     float translation_speed = 0.2; 
     float angular_speed = 0.4;
+    float angular_speed_back_loading = 0.2;
     int intensity_threshold = 8000;
     float distance_gap_threshold = 0.06;
-    float distance_to_be_moved_underneath = 0.35;
-    int time_to_move_loading_point = 18;
+    float distance_to_be_moved_underneath = 0.30;
+    int time_to_move_loading_point = 22;
     std::string parent_frame = "robot_front_laser_base_link";
     std::string child_frame = "cart_frame";
     std::string base_frame = "robot_base_link";
