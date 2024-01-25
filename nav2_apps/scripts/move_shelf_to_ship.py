@@ -26,7 +26,6 @@ class ShelfToShipNavigator(Node):
         self.shelf_raised = False
         self.unloaded_shelf_status= False
         self.moved_back_status = False
-        self.side_length = 0.6
         timer_period = 0.5          #timer period to call the timer callback method
         self.i = 0                  #this variable is used to print the attach_shelf_action feedback at set frequency.
         self.linear_speed = 0.2
@@ -42,7 +41,7 @@ class ShelfToShipNavigator(Node):
         self.set_initial_pose()
         self.execute_initial_navigation_task('shelf')
 
-    
+    # timer callback function to publish velocity for the robot to come out of the shelf
     def timer_callback(self):
         if (self.unloaded_shelf_status and not self.moved_back_status): 
             vel_msg = Twist()
@@ -50,7 +49,7 @@ class ShelfToShipNavigator(Node):
             vel_msg.angular.z = self.angular_speed
             # publish the velocity for certian time period
             for i in range (self.move_back_interval):   
-                self.get_logger().info("moving the robot out of the shelf")
+                # self.get_logger().info("moving the robot out of the shelf")    # for debug
                 self.vel_publisher.publish(vel_msg)
                 time.sleep(0.5)
             #stop the robot after it backs to an open area
@@ -60,11 +59,21 @@ class ShelfToShipNavigator(Node):
             self.vel_publisher.publish(vel_msg)
             self.timer.cancel()             #cancelling the timer after coming backout of the shelf
             self.get_logger().info("Came out of the shelf and calling navigation task to the intial position")
+            self.goto_initial_position_after_unloading()
         else:
             pass
             
 
-            
+    def goto_initial_position_after_unloading(self):
+        self.get_logger().info("Moving to the initial position after unloading")
+        self.go_to_pose(self.initial_position, 'go_to_initial_position')
+
+        # Process navigation result
+        result = self.navigator.getResult()
+        if result == TaskResult.SUCCEEDED:
+            self.get_logger().info("Reached near the initial point.")
+        else:
+            self.handle_navigation_failure(result, "initial_point")
 
 
     # mehtod to publish the footprint to any polygon shape
@@ -74,8 +83,8 @@ class ShelfToShipNavigator(Node):
 
 
     # mehtod to change the robot'footprint to square after loading the shelf (i.e. after successfully finishing the attach_shelf_action)
-    def change_to_square_footprint(self):
-        half_side = self.side_length / 2
+    def change_to_square_footprint(self, side_length, footprint_description):
+        half_side = side_length / 2
         square_points = [
             Point32(x=half_side, y=half_side, z=0.0),
             Point32(x=-half_side, y=half_side, z=0.0),
@@ -84,7 +93,7 @@ class ShelfToShipNavigator(Node):
         ]
         square_footprint = Polygon()
         square_footprint.points = square_points
-        self.get_logger().info("Changing robot's footprint to square")
+        self.get_logger().info("Changing robot's footprint to " + str(footprint_description))
         self.publish_footprint(square_footprint)
 
 
@@ -150,7 +159,7 @@ class ShelfToShipNavigator(Node):
             # self.get_logger().info("shelf raised status", self.shelf_raised)       # for debug
             self.get_logger().info("successully raised the shelf and brought to open position")
             #change the robot footprint to square after bringing the shelf to the open position
-            self.change_to_square_footprint()
+            self.change_to_square_footprint(side_length= 0.80, footprint_description="larger square to accomodate shelf")
             #calling the second navigation task
             self.proceed_to_shipping_destination()            #this is hided for debugging other tasks
         else:
@@ -166,8 +175,7 @@ class ShelfToShipNavigator(Node):
         result = self.navigator.getResult()
         if result == TaskResult.SUCCEEDED:
             self.get_logger().info("Reached near the shipping destination.")
-            #if succeded, unload the shelf at the shipping position
-            self.unload_shelf_at_shipping_position()
+            self.unload_shelf_at_shipping_position()                           #if succeded, unload the shelf at the shipping position
         else:
             self.handle_navigation_failure(result, "shipping_position")
 
@@ -179,10 +187,11 @@ class ShelfToShipNavigator(Node):
             self.elevator_down_publisher.publish(msg)
             self.get_logger().info("Successfully unloaded the shelf")
             self.unloaded_shelf_status = True           #after unloading, bring back the robot out of the shelf
+            # change the shape back to smaller square
+            self.change_to_square_footprint(side_length = 0.5, footprint_description="back to robot's original footprint")
             
 
           
-    
     #Callback method to print the feedback of the attach_shelf_action
     def feedback_callback(self, feedback_msg):
         feedback = feedback_msg.feedback
